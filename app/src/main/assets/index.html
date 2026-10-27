@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Guía 8 Ball</title>
+<style>
+html,body{margin:0;height:100%;background:#111;color:#eee;font-family:system-ui,sans-serif;overflow:hidden;touch-action:none;-webkit-user-select:none;user-select:none}
+#app{display:flex;flex-direction:column;height:100%}
+#bar{display:flex;flex-wrap:wrap;gap:5px;padding:5px;background:rgba(28,28,28,.95);align-items:center}
+button{background:#2d6a4f;color:#fff;border:0;border-radius:8px;padding:7px 9px;font-size:13px}
+button.on{background:#e9c46a;color:#000}
+button.red{background:#9d2b2b}
+label{font-size:12px;display:flex;align-items:center;gap:3px}
+input[type=range]{width:80px}
+#wrap{flex:1;position:relative;min-height:0}
+canvas{position:absolute;left:0;top:0;touch-action:none}
+#info{padding:4px 8px;font-size:13px;min-height:18px;background:rgba(28,28,28,.95)}
+#menuBtn{position:fixed;right:6px;top:6px;z-index:5;background:rgba(0,0,0,.55);padding:6px 10px;font-size:16px}
+html.overlay,html.overlay body,html.overlay #app{background:transparent}
+html.overlay #wrap{position:fixed;left:0;top:0;right:0;bottom:0}
+html.overlay #bar{position:fixed;top:0;left:0;right:0;z-index:4;background:rgba(28,28,28,.8)}
+html.overlay #info{position:fixed;bottom:0;left:0;right:0;z-index:4;background:rgba(28,28,28,.6)}
+html.overlay #bImg,html.overlay #bNoImg{display:none}
+</style>
+</head>
+<body>
+<button id="menuBtn">☰</button>
+<div id="app">
+  <div id="bar">
+    <button id="bAdd">+ Bola</button>
+    <button id="bDel" class="red">Quitar</button>
+    <button id="bPocket">🎯 A tronera</button>
+    <button id="bAfter" class="on">Blanca después</button>
+    <button id="bEdit">📐 Ajustar mesa</button>
+    <button id="b21">Mesa 2:1</button>
+    <button id="bImg">🖼 Captura</button>
+    <button id="bNoImg" class="red">✕ Fondo</button>
+    <button id="bReset" class="red">Reiniciar</button>
+    <label>Opacidad <input id="rAlpha" type="range" min="0" max="100" value="25"></label>
+    <label>Bola <input id="rR" type="range" min="8" max="60" value="22"><span id="vR">22</span></label>
+    <label>Rebotes <input id="rBounce" type="range" min="0" max="4" value="2"><span id="vBounce">2</span></label>
+    <input id="file" type="file" accept="image/*" style="display:none">
+  </div>
+  <div id="wrap"><canvas id="c"></canvas></div>
+  <div id="info"></div>
+</div>
+<script>
+(function(){
+const COLORS=['#f4d03f','#2e86de','#e74c3c','#8e44ad','#e67e22','#27ae60','#7b241c','#111111'];
+const OVERLAY=/overlay/.test(location.search);
+if(OVERLAY)document.documentElement.classList.add('overlay');
+let play=false;
+const cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const info=document.getElementById('info'),wrap=document.getElementById('wrap');
+let T=null,R=22,alpha=0.25,balls=[],aim={x:0,y:0},bounces=2,showAfter=true;
+let selected=null,mode=null,edit=false,drag=null,nextId=10,cw=0,ch=0,dpr=1,bgImg=null;
+
+const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+const norm=v=>{const l=Math.hypot(v.x,v.y)||1;return {x:v.x/l,y:v.y/l}};
+
+function pockets(){
+  const x1=T.x,y1=T.y,x2=T.x+T.w,y2=T.y+T.h,xm=T.x+T.w/2;
+  return [
+    {x:x1,y:y1,r:R*2.3,n:'sup-izq'},{x:xm,y:y1,r:R*1.8,n:'sup-centro'},{x:x2,y:y1,r:R*2.3,n:'sup-der'},
+    {x:x1,y:y2,r:R*2.3,n:'inf-izq'},{x:xm,y:y2,r:R*1.8,n:'inf-centro'},{x:x2,y:y2,r:R*2.3,n:'inf-der'}];
+}
+function defaultTable(){
+  let w=cw*0.92,h=w/2;
+  if(h>ch*0.92){h=ch*0.92;w=h*2}
+  T={x:(cw-w)/2,y:(ch-h)/2,w,h};
+  R=Math.max(8,Math.round(h*0.0225));
+}
+function defaultBalls(){
+  balls=[{id:0,x:T.x+T.w*0.25,y:T.y+T.h*0.5,cue:true,n:0},
+         {id:1,x:T.x+T.w*0.62,y:T.y+T.h*0.42,n:1},
+         {id:2,x:T.x+T.w*0.72,y:T.y+T.h*0.62,n:2}];
+  aim={x:balls[1].x,y:balls[1].y};nextId=10;selected=null;
+}
+function save(){try{localStorage.setItem('g8b',JSON.stringify({T,R,alpha,balls,aim,bounces,showAfter,nextId}))}catch(e){}}
+function load(){
+  try{const s=JSON.parse(localStorage.getItem('g8b'));
+    if(s&&s.T&&s.balls&&s.balls.length){T=s.T;R=s.R;alpha=s.alpha;balls=s.balls;aim=s.aim;bounces=s.bounces;showAfter=s.showAfter;nextId=s.nextId||10;return true}}catch(e){}
+  return false;
+}
+function syncUI(){
+  document.getElementById('rAlpha').value=Math.round(alpha*100);
+  document.getElementById('rR').value=R;document.getElementById('vR').textContent=Math.round(R);
+  document.getElementById('rBounce').value=bounces;document.getElementById('vBounce').textContent=bounces;
+  document.getElementById('bAfter').classList.toggle('on',showAfter);
+}
+function clampAll(){
+  balls.forEach(b=>{b.x=clamp(b.x,T.x+R,T.x+T.w-R);b.y=clamp(b.y,T.y+R,T.y+T.h-R)});
+  aim.x=clamp(aim.x,T.x,T.x+T.w);aim.y=clamp(aim.y,T.y,T.y+T.h);
+}
+
+function segPointDist(a,b,p){
+  const dx=b.x-a.x,dy=b.y-a.y,l2=dx*dx+dy*dy;
+  let t=l2?((p.x-a.x)*dx+(p.y-a.y)*dy)/l2:0;t=clamp(t,0,1);
+  const x=a.x+t*dx,y=a.y+t*dy;
+  return {d:Math.hypot(p.x-x,p.y-y),t,x,y};
+}
+function wallT(p,d){
+  const x1=T.x+R,x2=T.x+T.w-R,y1=T.y+R,y2=T.y+T.h-R;
+  let t=Infinity,ax='';
+  if(d.x>1e-9){const tt=(x2-p.x)/d.x;if(tt>1e-6&&tt<t){t=tt;ax='x'}}
+  if(d.x<-1e-9){const tt=(x1-p.x)/d.x;if(tt>1e-6&&tt<t){t=tt;ax='x'}}
+  if(d.y>1e-9){const tt=(y2-p.y)/d.y;if(tt>1e-6&&tt<t){t=tt;ax='y'}}
+  if(d.y<-1e-9){const tt=(y1-p.y)/d.y;if(tt>1e-6&&tt<t){t=tt;ax='y'}}
+  return {t,ax};
+}
+function ballT(p,d,b){
+  const fx=p.x-b.x,fy=p.y-b.y,bq=fx*d.x+fy*d.y,c=fx*fx+fy*fy-4*R*R;
+  if(c<0)return Infinity;
+  const disc=bq*bq-c;if(disc<0)return Infinity;
+  const t=-bq-Math.sqrt(disc);return t>1e-6?t:Infinity;
+}
+function trace(p,d,skip,maxB,useBalls){
+  const PK=pockets();
+  const segs=[];let hit=null,pocket=-1;
+  let pos={x:p.x,y:p.y},dir={x:d.x,y:d.y};
+  for(let k=0;k<=maxB;k++){
+    const w=wallT(pos,dir);let tb=Infinity,hb=null;
+    if(useBalls)for(const b of balls){if(skip.has(b.id))continue;const t=ballT(pos,dir,b);if(t<tb){tb=t;hb=b}}
+    const tEnd=Math.min(w.t,tb);
+    if(tEnd===Infinity)break;
+    const end={x:pos.x+dir.x*tEnd,y:pos.y+dir.y*tEnd};
+    let best=null;
+    for(let i=0;i<PK.length;i++){const r=segPointDist(pos,end,PK[i]);if(r.d<PK[i].r&&(!best||r.t<best.t))best={t:r.t,x:r.x,y:r.y,i}}
+    if(best){segs.push({a:pos,b:{x:best.x,y:best.y}});pocket=best.i;return{segs,hit,pocket}}
+    segs.push({a:pos,b:end});
+    if(tb<w.t){hit={ball:hb,ghost:end};return{segs,hit,pocket}}
+    pos=end;dir=w.ax==='x'?{x:-dir.x,y:dir.y}:{x:dir.x,y:-dir.y};
+  }
+  return{segs,hit,pocket};
+}
+
+function line(segs,color,width,dash){
+  ctx.strokeStyle=color;ctx.lineWidth=width;ctx.setLineDash(dash||[]);
+  ctx.beginPath();segs.forEach(s=>{ctx.moveTo(s.a.x,s.a.y);ctx.lineTo(s.b.x,s.b.y)});ctx.stroke();ctx.setLineDash([]);
+}
+function circle(x,y,r,fill,stroke,lw){
+  ctx.beginPath();ctx.arc(x,y,r,0,7);
+  if(fill){ctx.fillStyle=fill;ctx.fill()}
+  if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=lw||2;ctx.stroke()}
+}
+function corners(){return [{x:T.x,y:T.y},{x:T.x+T.w,y:T.y},{x:T.x,y:T.y+T.h},{x:T.x+T.w,y:T.y+T.h}]}
+
+function draw(){
+  const k=R/22;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,cw,ch);
+  if(!OVERLAY){ctx.fillStyle='#111';ctx.fillRect(0,0,cw,ch)}
+  if(bgImg){const s=Math.min(cw/bgImg.width,ch/bgImg.height),w=bgImg.width*s,h=bgImg.height*s;ctx.drawImage(bgImg,(cw-w)/2,(ch-h)/2,w,h)}
+  ctx.fillStyle='rgba(27,122,75,'+alpha+')';ctx.fillRect(T.x,T.y,T.w,T.h);
+  ctx.strokeStyle='rgba(255,255,255,.7)';ctx.lineWidth=2;ctx.strokeRect(T.x,T.y,T.w,T.h);
+  pockets().forEach(p=>circle(p.x,p.y,p.r*0.7,'rgba(0,0,0,'+Math.min(.55,alpha+.15)+')','rgba(255,255,255,.5)',1.5));
+
+  const cue=balls[0];
+  const dir=norm({x:aim.x-cue.x,y:aim.y-cue.y});
+  const t1=trace(cue,dir,new Set([cue.id]),bounces,true);
+  line(t1.segs,'rgba(255,255,255,.95)',Math.max(2,3*k));
+  let text='';
+  const PK=pockets();
+  if(t1.pocket>=0)text='⚠ La blanca entra a la tronera '+PK[t1.pocket].n;
+  if(t1.hit){
+    const B=t1.hit.ball,G=t1.hit.ghost;
+    circle(G.x,G.y,R,'rgba(255,255,255,.15)','#fff',2);
+    const n=norm({x:B.x-G.x,y:B.y-G.y});
+    const t2=trace(B,n,new Set([B.id,cue.id]),bounces,true);
+    line(t2.segs,'#ffd23f',Math.max(2,3.5*k));
+    const dot=clamp(dir.x*n.x+dir.y*n.y,-1,1);
+    const cut=Math.round(Math.acos(dot)*180/Math.PI);
+    text='Corte '+cut+'° · bola '+B.n+(t2.pocket>=0?' → entra en '+PK[t2.pocket].n:' → no entra');
+    if(showAfter){
+      const tv={x:dir.x-n.x*dot,y:dir.y-n.y*dot},l=Math.hypot(tv.x,tv.y);
+      if(l>1e-3){
+        const td={x:tv.x/l,y:tv.y/l};
+        const t3=trace(G,td,new Set([cue.id,B.id]),Math.min(bounces,1),true);
+        line(t3.segs,'#4cc9f0',Math.max(2,2.5*k),[10*k,7*k]);
+        if(t3.pocket>=0)text+=' · ⚠ blanca → '+PK[t3.pocket].n;
+      }
+    }
+  } else if(!text) text='Sin choque con bolas';
+  if(mode==='pocket')text='Toca una tronera (bola seleccionada: '+(selected!=null?'sí':'no')+')';
+  if(edit)text='AJUSTAR MESA: arrastra las esquinas para el tamaño, dentro para mover';
+
+  ctx.globalAlpha=0.65;
+  balls.forEach(b=>{
+    circle(b.x,b.y,R,b.cue?'#f5f5f5':COLORS[(b.n-1)%COLORS.length],'#000',1.5);
+    if(!b.cue){circle(b.x,b.y,R*0.5,'#fff');ctx.fillStyle='#000';ctx.font='bold '+Math.round(R*0.9)+'px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(b.n,b.x,b.y+1)}
+  });
+  ctx.globalAlpha=1;
+  balls.forEach(b=>{if(b.id===selected&&!play)circle(b.x,b.y,R+5,null,'#e9c46a',3)});
+  circle(aim.x,aim.y,Math.max(6,8*k),'rgba(255,60,60,.9)','#fff',2);
+  if(edit){
+    ctx.strokeStyle='#e9c46a';ctx.lineWidth=3;ctx.strokeRect(T.x,T.y,T.w,T.h);
+    corners().forEach(c=>{ctx.fillStyle='#e9c46a';ctx.fillRect(c.x-13,c.y-13,26,26)});
+  }
+  info.textContent=text||'Toca vacío para apuntar · arrastra las bolas';
+}
+
+function fit(){
+  cw=wrap.clientWidth;ch=wrap.clientHeight;dpr=window.devicePixelRatio||1;
+  cv.style.width=cw+'px';cv.style.height=ch+'px';
+  cv.width=Math.round(cw*dpr);cv.height=Math.round(ch*dpr);
+  if(!T){defaultTable();defaultBalls();syncUI()}
+  draw();
+}
+function pt(e){const r=cv.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top}}
+function ballAt(p){
+  let best=null,bd=R*1.8;
+  balls.forEach(b=>{const d=Math.hypot(b.x-p.x,b.y-p.y);if(d<bd){bd=d;best=b}});
+  return best;
+}
+cv.addEventListener('pointerdown',e=>{
+  cv.setPointerCapture(e.pointerId);
+  const p=pt(e);
+  if(edit){
+    const cs=corners();
+    for(let i=0;i<4;i++){
+      if(Math.hypot(cs[i].x-p.x,cs[i].y-p.y)<34){
+        drag={t:'corner',fx:(i%2===0)?T.x+T.w:T.x,fy:(i<2)?T.y+T.h:T.y};return;
+      }
+    }
+    if(p.x>T.x&&p.x<T.x+T.w&&p.y>T.y&&p.y<T.y+T.h)drag={t:'move',ox:p.x-T.x,oy:p.y-T.y};
+    return;
+  }
+  if(mode==='pocket'){
+    const PK=pockets();let pk=null,bd=1e9;
+    PK.forEach(q=>{const d=Math.hypot(q.x-p.x,q.y-p.y);if(d<bd&&d<Math.max(q.r*2,50)){bd=d;pk=q}});
+    const B=balls.find(b=>b.id===selected);
+    if(pk&&B&&!B.cue){
+      const u=norm({x:pk.x-B.x,y:pk.y-B.y});
+      aim={x:B.x-u.x*2*R,y:B.y-u.y*2*R};
+    }
+    mode=null;document.getElementById('bPocket').classList.remove('on');draw();save();return;
+  }
+  const b=ballAt(p);
+  if(b){drag={t:'ball',b};selected=b.id}
+  else{drag={t:'aim'};aim={x:clamp(p.x,T.x,T.x+T.w),y:clamp(p.y,T.y,T.y+T.h)}}
+  draw();
+});
+cv.addEventListener('pointermove',e=>{
+  if(!drag)return;const p=pt(e);
+  if(drag.t==='aim')aim={x:clamp(p.x,T.x,T.x+T.w),y:clamp(p.y,T.y,T.y+T.h)};
+  else if(drag.t==='ball'){drag.b.x=clamp(p.x,T.x+R,T.x+T.w-R);drag.b.y=clamp(p.y,T.y+R,T.y+T.h-R)}
+  else if(drag.t==='corner'){
+    T={x:Math.min(p.x,drag.fx),y:Math.min(p.y,drag.fy),w:Math.max(60,Math.abs(p.x-drag.fx)),h:Math.max(40,Math.abs(p.y-drag.fy))};
+  } else if(drag.t==='move'){T.x=p.x-drag.ox;T.y=p.y-drag.oy}
+  draw();
+});
+function endDrag(){if(drag&&(drag.t==='corner'||drag.t==='move'))clampAll();drag=null;draw();save()}
+cv.addEventListener('pointerup',endDrag);
+cv.addEventListener('pointercancel',()=>{drag=null});
+
+document.getElementById('bAdd').onclick=()=>{
+  const objs=balls.filter(b=>!b.cue).length;
+  if(objs>=15)return;
+  const used=new Set(balls.map(b=>b.n));let n=1;while(used.has(n))n++;
+  balls.push({id:nextId++,x:T.x+T.w/2+(objs%5)*R*2.6,y:T.y+T.h/2+Math.floor(objs/5)*R*2.6-R*2.6,n});
+  clampAll();selected=balls[balls.length-1].id;draw();save();
+};
+document.getElementById('bDel').onclick=()=>{
+  const i=balls.findIndex(b=>b.id===selected);
+  if(i>0){balls.splice(i,1);selected=null;draw();save()}
+};
+document.getElementById('bPocket').onclick=e=>{mode=mode?null:'pocket';e.target.classList.toggle('on',!!mode);draw()};
+document.getElementById('bAfter').onclick=e=>{showAfter=!showAfter;e.target.classList.toggle('on',showAfter);draw();save()};
+document.getElementById('bEdit').onclick=e=>{edit=!edit;e.target.classList.toggle('on',edit);if(!edit)clampAll();draw();save()};
+document.getElementById('b21').onclick=()=>{T.h=T.w/2;clampAll();draw();save()};
+document.getElementById('bImg').onclick=()=>document.getElementById('file').click();
+document.getElementById('file').onchange=e=>{
+  const f=e.target.files[0];if(!f)return;
+  const img=new Image();img.onload=()=>{bgImg=img;draw()};img.src=URL.createObjectURL(f);e.target.value='';
+};
+document.getElementById('bNoImg').onclick=()=>{bgImg=null;draw()};
+document.getElementById('bReset').onclick=()=>{defaultTable();defaultBalls();syncUI();draw();save()};
+document.getElementById('rAlpha').oninput=e=>{alpha=e.target.value/100;draw();save()};
+document.getElementById('rR').oninput=e=>{R=+e.target.value;document.getElementById('vR').textContent=R;clampAll();draw();save()};
+document.getElementById('rBounce').oninput=e=>{bounces=+e.target.value;document.getElementById('vBounce').textContent=bounces;draw();save()};
+document.getElementById('menuBtn').onclick=()=>{
+  const bar=document.getElementById('bar');bar.style.display=bar.style.display==='none'?'flex':'none';fit();
+};
+window.setPlay=function(on){
+  play=on;
+  document.getElementById('bar').style.display=on?'none':'flex';
+  document.getElementById('info').style.display=on?'none':'';
+  document.getElementById('menuBtn').style.display=on?'none':'';
+  if(on){edit=false;document.getElementById('bEdit').classList.remove('on');mode=null;clampAll()}
+  draw();
+};
+window.addEventListener('resize',fit);
+if(load())syncUI();
+fit();
+})();
+</script>
+</body>
+</html>
