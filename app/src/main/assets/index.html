@@ -22,6 +22,9 @@ html.overlay #wrap{position:fixed;left:0;top:0;right:0;bottom:0}
 html.overlay #bar{position:fixed;top:0;left:0;right:0;z-index:4;background:rgba(28,28,28,.8)}
 html.overlay #info{position:fixed;bottom:0;left:0;right:0;z-index:4;background:rgba(28,28,28,.6)}
 html.overlay #bImg,html.overlay #bNoImg{display:none}
+#bScan,#bAuto,#lSens{display:none}
+html.native #bScan,html.native #bAuto{display:inline-block}
+html.native #lSens{display:flex}
 </style>
 </head>
 <body>
@@ -34,12 +37,16 @@ html.overlay #bImg,html.overlay #bNoImg{display:none}
     <button id="bAfter" class="on">Blanca después</button>
     <button id="bEdit">📐 Ajustar mesa</button>
     <button id="b21">Mesa 2:1</button>
+    <button id="bAuto">📸 Detectar todo</button>
+    <button id="bScan">🎱 Solo bolas</button>
     <button id="bImg">🖼 Captura</button>
     <button id="bNoImg" class="red">✕ Fondo</button>
     <button id="bReset" class="red">Reiniciar</button>
     <label>Opacidad <input id="rAlpha" type="range" min="0" max="100" value="25"></label>
     <label>Bola <input id="rR" type="range" min="8" max="60" value="22"><span id="vR">22</span></label>
-    <label>Rebotes <input id="rBounce" type="range" min="0" max="4" value="2"><span id="vBounce">2</span></label>
+    <label>Tronera <input id="rPk" type="range" min="50" max="170" value="100"></label>
+    <label>Rebotes<input id="rBounce" type="range" min="0" max="4" value="2"><span id="vBounce">2</span></label>
+    <label id="lSens">Sens <input id="rSens" type="range" min="20" max="120" value="55"></label>
     <input id="file" type="file" accept="image/*" style="display:none">
   </div>
   <div id="wrap"><canvas id="c"></canvas></div>
@@ -50,10 +57,13 @@ html.overlay #bImg,html.overlay #bNoImg{display:none}
 const COLORS=['#f4d03f','#2e86de','#e74c3c','#8e44ad','#e67e22','#27ae60','#7b241c','#111111'];
 const OVERLAY=/overlay/.test(location.search);
 if(OVERLAY)document.documentElement.classList.add('overlay');
-let play=false;
+let play=false,note='';
+const HAS=typeof Android!=='undefined';
+if(HAS)document.documentElement.classList.add('native');
 const cv=document.getElementById('c'),ctx=cv.getContext('2d');
 const info=document.getElementById('info'),wrap=document.getElementById('wrap');
 let T=null,R=22,alpha=0.25,balls=[],aim={x:0,y:0},bounces=2,showAfter=true;
+let kC=2.3,kS=1.8,pkScale=1;
 let selected=null,mode=null,edit=false,drag=null,nextId=10,cw=0,ch=0,dpr=1,bgImg=null;
 
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
@@ -62,14 +72,15 @@ const norm=v=>{const l=Math.hypot(v.x,v.y)||1;return {x:v.x/l,y:v.y/l}};
 function pockets(){
   const x1=T.x,y1=T.y,x2=T.x+T.w,y2=T.y+T.h,xm=T.x+T.w/2;
   return [
-    {x:x1,y:y1,r:R*2.3,n:'sup-izq'},{x:xm,y:y1,r:R*1.8,n:'sup-centro'},{x:x2,y:y1,r:R*2.3,n:'sup-der'},
-    {x:x1,y:y2,r:R*2.3,n:'inf-izq'},{x:xm,y:y2,r:R*1.8,n:'inf-centro'},{x:x2,y:y2,r:R*2.3,n:'inf-der'}];
+    {x:x1,y:y1,r:R*kC*pkScale,n:'sup-izq'},{x:xm,y:y1,r:R*kS*pkScale,n:'sup-centro'},{x:x2,y:y1,r:R*kC*pkScale,n:'sup-der'},
+    {x:x1,y:y2,r:R*kC*pkScale,n:'inf-izq'},{x:xm,y:y2,r:R*kS*pkScale,n:'inf-centro'},{x:x2,y:y2,r:R*kC*pkScale,n:'inf-der'}];
 }
 function defaultTable(){
   let w=cw*0.92,h=w/2;
   if(h>ch*0.92){h=ch*0.92;w=h*2}
   T={x:(cw-w)/2,y:(ch-h)/2,w,h};
   R=Math.max(8,Math.round(h*0.0225));
+  kC=2.3;kS=1.8;pkScale=1;
 }
 function defaultBalls(){
   balls=[{id:0,x:T.x+T.w*0.25,y:T.y+T.h*0.5,cue:true,n:0},
@@ -77,16 +88,17 @@ function defaultBalls(){
          {id:2,x:T.x+T.w*0.72,y:T.y+T.h*0.62,n:2}];
   aim={x:balls[1].x,y:balls[1].y};nextId=10;selected=null;
 }
-function save(){try{localStorage.setItem('g8b',JSON.stringify({T,R,alpha,balls,aim,bounces,showAfter,nextId}))}catch(e){}}
+function save(){try{localStorage.setItem('g8b',JSON.stringify({T,R,alpha,balls,aim,bounces,showAfter,nextId,kC,kS,pkScale}))}catch(e){}}
 function load(){
   try{const s=JSON.parse(localStorage.getItem('g8b'));
-    if(s&&s.T&&s.balls&&s.balls.length){T=s.T;R=s.R;alpha=s.alpha;balls=s.balls;aim=s.aim;bounces=s.bounces;showAfter=s.showAfter;nextId=s.nextId||10;return true}}catch(e){}
+    if(s&&s.T&&s.balls&&s.balls.length){T=s.T;R=s.R;alpha=s.alpha;balls=s.balls;aim=s.aim;bounces=s.bounces;showAfter=s.showAfter;nextId=s.nextId||10;kC=s.kC||2.3;kS=s.kS||1.8;pkScale=s.pkScale||1;return true}}catch(e){}
   return false;
 }
 function syncUI(){
   document.getElementById('rAlpha').value=Math.round(alpha*100);
   document.getElementById('rR').value=R;document.getElementById('vR').textContent=Math.round(R);
   document.getElementById('rBounce').value=bounces;document.getElementById('vBounce').textContent=bounces;
+  document.getElementById('rPk').value=Math.round(pkScale*100);
   document.getElementById('bAfter').classList.toggle('on',showAfter);
 }
 function clampAll(){
@@ -187,7 +199,7 @@ function draw(){
 
   ctx.globalAlpha=0.65;
   balls.forEach(b=>{
-    circle(b.x,b.y,R,b.cue?'#f5f5f5':COLORS[(b.n-1)%COLORS.length],'#000',1.5);
+    circle(b.x,b.y,R,b.cue?'#f5f5f5':(b.col||COLORS[(b.n-1)%COLORS.length]),'#000',1.5);
     if(!b.cue){circle(b.x,b.y,R*0.5,'#fff');ctx.fillStyle='#000';ctx.font='bold '+Math.round(R*0.9)+'px sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(b.n,b.x,b.y+1)}
   });
   ctx.globalAlpha=1;
@@ -197,7 +209,7 @@ function draw(){
     ctx.strokeStyle='#e9c46a';ctx.lineWidth=3;ctx.strokeRect(T.x,T.y,T.w,T.h);
     corners().forEach(c=>{ctx.fillStyle='#e9c46a';ctx.fillRect(c.x-13,c.y-13,26,26)});
   }
-  info.textContent=text||'Toca vacío para apuntar · arrastra las bolas';
+  info.textContent=(note?note+' · ':'')+(text||'Toca vacío para apuntar · arrastra las bolas');
 }
 
 function fit(){
@@ -215,6 +227,7 @@ function ballAt(p){
 }
 cv.addEventListener('pointerdown',e=>{
   cv.setPointerCapture(e.pointerId);
+  note='';
   const p=pt(e);
   if(edit){
     const cs=corners();
@@ -278,9 +291,46 @@ document.getElementById('bNoImg').onclick=()=>{bgImg=null;draw()};
 document.getElementById('bReset').onclick=()=>{defaultTable();defaultBalls();syncUI();draw();save()};
 document.getElementById('rAlpha').oninput=e=>{alpha=e.target.value/100;draw();save()};
 document.getElementById('rR').oninput=e=>{R=+e.target.value;document.getElementById('vR').textContent=R;clampAll();draw();save()};
+document.getElementById('rPk').oninput=e=>{pkScale=e.target.value/100;draw();save()};
 document.getElementById('rBounce').oninput=e=>{bounces=+e.target.value;document.getElementById('vBounce').textContent=bounces;draw();save()};
 document.getElementById('menuBtn').onclick=()=>{
   const bar=document.getElementById('bar');bar.style.display=bar.style.display==='none'?'flex':'none';fit();
+};
+function doScan(auto){
+  if(!HAS)return;
+  const kk=Android.screenW()/window.innerWidth;
+  if(!(kk>0)){note='Captura no disponible: reinicia la guía y acepta el permiso de captura';draw();return}
+  document.documentElement.style.visibility='hidden';
+  Android.scan(T.x*kk,T.y*kk,T.w*kk,T.h*kk,R*kk,+document.getElementById('rSens').value,!!auto);
+}
+document.getElementById('bScan').onclick=()=>doScan(false);
+document.getElementById('bAuto').onclick=()=>doScan(true);
+window.onScan=function(s){
+  document.documentElement.style.visibility='';
+  let r;try{r=JSON.parse(s)}catch(e){return}
+  if(r.error){note=r.error;draw();return}
+  const kk=r.w/window.innerWidth;
+  if(r.table){
+    T={x:r.table.x/kk,y:r.table.y/kk,w:r.table.w/kk,h:r.table.h/kk};
+    R=Math.max(6,r.rad/kk);
+    if(r.rad>0&&r.pc>0)kC=r.pc/r.rad;
+    if(r.rad>0&&r.ps>0)kS=r.ps/r.rad;
+    pkScale=1;syncUI();
+  }
+  const list=(r.balls||[]).map(b=>({x:b.x/kk,y:b.y/kk,c:b.c,white:b.white,dark:b.dark}))
+    .filter(b=>b.x>T.x&&b.x<T.x+T.w&&b.y>T.y&&b.y<T.y+T.h);
+  if(!list.length){note='No detecté bolas: ajusta la mesa o sube la sensibilidad';draw();return}
+  const cue=list.find(b=>b.white);
+  const old=balls[0];
+  balls=[{id:0,x:cue?cue.x:old.x,y:cue?cue.y:old.y,cue:true,n:0}];
+  nextId=10;let n=1;
+  list.filter(b=>b!==cue).slice(0,15).forEach(b=>{
+    if(n===8)n++;
+    balls.push({id:nextId++,x:b.x,y:b.y,n:b.dark?8:n++,col:b.c});
+  });
+  selected=null;clampAll();
+  note=(r.table?'Mesa y troneras ajustadas · ':'')+'Detectadas '+list.length+' bolas'+(cue?'':' (no vi la blanca)');
+  draw();save();
 };
 window.setPlay=function(on){
   play=on;
